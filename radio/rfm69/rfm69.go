@@ -7,6 +7,7 @@ package rfm69
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/kidoman/embd"
 )
@@ -18,12 +19,13 @@ type rfm69 struct {
 	intrPin embd.InterruptPin // interrupt pin for RX and TX interrupts
 	id      byte              // my RF ID/address
 	group   byte              // RF address of group
-	freq    int               // center frequency
+	freq    uint32            // center frequency
 	parity  byte              // ???
 	// state
 	mode byte // current operation mode
 	// info about current RX packet
 	rxInfo *RxInfo
+	rxChan chan RxPacket
 }
 
 type Packet struct {
@@ -43,7 +45,7 @@ type RxInfo struct {
 // the bufCount determines how many transmit buffers are allocated to allow for the queueing of
 // transmit packets.
 // For the RFM69 the SPI bus must be set to 10Mhz and mode 0.
-func New(bus embd.SPIBus, intr embd.InterruptPin, id, group byte, freq int) *rfm69 {
+func New(bus embd.SPIBus, intr embd.InterruptPin, id, group byte, freq uint32) *rfm69 {
 	// bit 7 = b7^b5^b3^b1; bit 6 = b6^b4^b2^b0
 	parity := group ^ (group << 4)
 	parity = (parity ^ (parity << 2)) & 0xc0
@@ -88,6 +90,11 @@ func (rf *rfm69) Init() error {
 		return err
 	}
 
+	vers, err := rf.readReg(REG_VERSION)
+	if err == nil {
+		log.Printf("RFM69/SX1231 version %#x", vers)
+	}
+
 	// write the configuration into the registers
 	for i := 0; i < len(configRegs)-1; i += 2 {
 		if err := rf.writeReg(configRegs[i], configRegs[i+1]); err != nil {
@@ -98,18 +105,26 @@ func (rf *rfm69) Init() error {
 	rf.setFrequency(rf.freq)
 	rf.writeReg(REG_SYNCVALUE2, rf.group)
 
+	// initialize interrupts
+	// we use a bit of a dirty hack to get hold of the digital pin underlying the
+	// interrupt pin so we can set its direction to be an input, although maybe that's
+	// taken care of by the linux driver? who knows...
+	if rf.intrPin == nil {
+		return nil
+	}
 	if gpio, ok := rf.intrPin.(embd.DigitalPin); ok {
-		log.Printf("Set intr direction")
+		//log.Printf("Set intr direction")
 		gpio.SetDirection(embd.In)
 	}
 	if err := rf.intrPin.Watch(embd.EdgeRising, rf.intrHandler); err != nil {
 		return err
 	}
+	embd.SetDirection("CSID1", embd.Out)
 
 	return nil
 }
 
-func (rf *rfm69) setFrequency(freq int) {
+func (rf *rfm69) setFrequency(freq uint32) {
 	// accept any frequency scale as input, including KHz and MHz
 	// multiply by 10 until freq >= 100 MHz
 	for freq > 0 && freq < 100000000 {
@@ -125,6 +140,8 @@ func (rf *rfm69) setFrequency(freq int) {
 	rf.writeReg(REG_FRFMSB, byte(frf>>10))
 	rf.writeReg(REG_FRFMSB+1, byte(frf>>2))
 	rf.writeReg(REG_FRFMSB+2, byte(frf<<6))
+	//log.Printf("SetFreq: %d %d %02x %02x %02x", freq, uint32(frf<<6),
+	//	byte(frf>>10), byte(frf>>2), byte(frf<<6))
 }
 
 func (rf *rfm69) setMode(mode byte) error {
@@ -155,6 +172,8 @@ func (rf *rfm69) Send(header byte, message []byte) error {
 		return fmt.Errorf("message too long")
 	}
 	rf.setMode(MODE_SLEEP)
+	//rf.writeReg(0x2D, 0x01) // set preamble to 1 (too short)
+	//rf.writeReg(0x2F, 0x00) // set wrong sync value
 
 	buf := make([]byte, len(message)+4)
 	buf[0] = REG_FIFO | 0x80
@@ -180,24 +199,42 @@ func (rf *rfm69) Send(header byte, message []byte) error {
 	return nil
 }
 
+func (rf *rfm69) SetPower(v byte) {
+	if v > 0x1F {
+		v = 0x1F
+	}
+	log.Printf("SetPower %ddBm", -18+int(v))
+	rf.writeReg(0x11, 0x80+v)
+}
+
 func (rf *rfm69) readInfo() *RxInfo {
 	// collect rxinfo, start with rssi
 	rxInfo := &RxInfo{}
+	//cfg, _ := rf.readReg(REG_RSSICONFIG)
+	//if cfg&0x02 == 0 {
+	//rxInfo.rssi = 0 // RSSI not ready
+	//} else {
 	rssi, _ := rf.readReg(REG_RSSIVALUE)
 	rxInfo.rssi = 0 - int(rssi)/2
+	//}
 	// low noise amp gain
 	lna, _ := rf.readReg(REG_LNAVALUE)
 	rxInfo.lna = int((lna >> 3) & 0x7)
 	// auto freq correction applied, caution: signed value
 	buf := []byte{REG_AFCMSB, 0, 0}
 	rf.spi.TransferAndReceiveData(buf)
-	rxInfo.afc = int(int8(buf[1]))<<8 | int(buf[2])
+	f := int(int8(buf[1]))<<8 | int(buf[2])
+	rxInfo.afc = (f * (32000000 >> 13)) >> 6
 	// freq error detected, caution: signed value
 	buf = []byte{REG_FEIMSB, 0, 0}
 	rf.spi.TransferAndReceiveData(buf)
-	rxInfo.fei = int(int8(buf[1]))<<8 | int(buf[2])
+	f = int(int8(buf[1]))<<8 | int(buf[2])
+	rxInfo.fei = (f * (32000000 >> 13)) >> 6
+	//fmt.Printf("\nrxinfo: %+v", *rxInfo)
 	return rxInfo
 }
+
+var i1, i2 byte
 
 func (rf *rfm69) Receive() (header byte, message []byte, info *RxInfo, err error) {
 	// if we're not in receive mode, then switch, this also flushes the FIFO
@@ -224,6 +261,12 @@ func (rf *rfm69) Receive() (header byte, message []byte, info *RxInfo, err error
 		return 0, nil, nil, err
 	}
 	if irq2&IRQ2_PAYLOADREADY == 0 {
+		irq1, _ := rf.readReg(REG_IRQFLAGS1)
+		if irq1 != i1 || irq2 != i2 {
+			fmt.Printf("\nnot ready: %x %x", irq1, irq2)
+			i1 = irq1
+			i2 = irq2
+		}
 		return
 	}
 	i2 := rf.readInfo()
@@ -252,6 +295,86 @@ func (rf *rfm69) Receive() (header byte, message []byte, info *RxInfo, err error
 	return
 }
 
+type RxPacket struct {
+	Header  byte
+	Message []byte
+	Info    *RxInfo
+}
+
+func (rf *rfm69) StartReceive() chan RxPacket {
+	// allocate a channel for recevied packets, give it some buffer but the reality is that
+	// packets don't come in that fast either...
+	if rf.rxChan == nil {
+		rf.rxChan = make(chan RxPacket, 10)
+	}
+	// if we're not in receive mode, then switch, this also flushes the FIFO
+	if rf.mode != MODE_RECEIVE {
+		rf.setMode(MODE_RECEIVE)
+	}
+	return rf.rxChan
+}
+
 func (rf *rfm69) intrHandler(pin embd.DigitalPin) {
-	log.Printf("Interrupt called!")
+	embd.DigitalWrite("CSID1", 1)
+	defer func() { embd.DigitalWrite("CSID1", 0) }()
+	// if we're not in receive mode, then ignore
+	if rf.mode != MODE_RECEIVE {
+		return
+	}
+	i0 := rf.readInfo()
+	dbgPush("Interrupt")
+	dbgPush(fmt.Sprintf("%+v", *i0))
+
+	defer dbgPrint()
+
+	/*defer func() {
+		rf.setMode(MODE_STANDBY)
+		rf.setMode(MODE_RECEIVE)
+	}()*/
+
+	// assume we get an interrupt when rssi exceeds threshold, now just loop and
+	// collect data...
+	t0 := time.Now()
+	for {
+		// see whether we have a full packet
+		irq2, err := rf.readReg(REG_IRQFLAGS2)
+		if err != nil || irq2&IRQ2_PAYLOADREADY != 0 {
+			break
+		}
+		irq1, _ := rf.readReg(REG_IRQFLAGS1)
+		if irq1&IRQ1_MODEREADY == 0 {
+			return
+		}
+		/*if time.Since(t0).Seconds() > 0.2 {
+			i2 := rf.readInfo()
+			dbgPush(fmt.Sprintf("%+v timeout", *i2))
+			t0 = time.Now()
+		}*/
+		if time.Since(t0).Seconds() > 100.0*8/50000 { // 100 bytes @50khz
+			dbgPush("   timeout")
+			return
+		}
+	}
+
+	i := rf.readInfo()
+	dbgPush(fmt.Sprintf("%+v", *i))
+	// got packet, read it by fetching the entire FIFO, should be faster than first
+	// looking at the length
+	buf := make([]byte, 67)
+	buf[0] = REG_FIFO
+	err := rf.spi.TransferAndReceiveData(buf)
+	if err != nil {
+		return
+	}
+	// push packet into channel
+	l := buf[1]
+	if l > 66 {
+		l = 66 // or error?
+	}
+	pkt := RxPacket{Header: buf[2], Message: buf[3 : 2+l], Info: i}
+	select {
+	case rf.rxChan <- pkt: // awesome
+	default:
+		log.Printf("RFM69: RxChan full")
+	}
 }

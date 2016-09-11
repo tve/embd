@@ -6,12 +6,14 @@ const (
 	REG_FIFO       = 0x00
 	REG_OPMODE     = 0x01
 	REG_FRFMSB     = 0x07
+	REG_VERSION    = 0x10
 	REG_PALEVEL    = 0x11
 	REG_LNAVALUE   = 0x18
 	REG_AFCMSB     = 0x1F
 	REG_AFCLSB     = 0x20
 	REG_FEIMSB     = 0x21
 	REG_FEILSB     = 0x22
+	REG_RSSICONFIG = 0x23
 	REG_RSSIVALUE  = 0x24
 	REG_IRQFLAGS1  = 0x27
 	REG_IRQFLAGS2  = 0x28
@@ -43,26 +45,30 @@ const (
 
 // register values to initialize the chip, this array has pairs of <address, data>
 var configRegs = []byte{
-	// POR value is better for first rf_sleep  0x01, 0x00, // OpMode = sleep
+	0x01, 0x00, // OpMode = sleep
 	0x02, 0x00, // DataModul = packet mode, fsk
 	0x03, 0x02, // BitRateMsb, data rate = 49,261 khz
 	0x04, 0x8A, // BitRateLsb, divider = 32 MHz / 650
 	0x05, 0x02, // FdevMsb = 45 KHz
 	0x06, 0xE1, // FdevLsb = 45 KHz
 	0x0B, 0x20, // Low M
+	0x11, 0x9F, // power output
 	0x19, 0x4A, // RxBw 100 KHz
 	0x1A, 0x42, // AfcBw 125 KHz
 	0x1E, 0x0C, // AfcAutoclearOn, AfcAutoOn
 	//0x25, 0x40, //0x80, // DioMapping1 = SyncAddress (Rx)
+	0x25, 0x71, // DioMapping DIO0:payload, DIO1:timeout, DIO3:RSSI
 	0x26, 0x07, // disable clkout
 	0x29, 0xA0, // RssiThresh -80 dB
+	0x29, 0xB4, // RssiThresh -90 dB
+	0x2B, 64, // RssiTimeout after 128 bytes
 	0x2D, 0x05, // PreambleSize = 5
 	0x2E, 0x88, // SyncConfig = sync on, sync size = 2
 	0x2F, 0x2D, // SyncValue1 = 0x2D
 	0x37, 0xD0, // PacketConfig1 = fixed, white, no filtering
 	0x38, 0x42, // PayloadLength = 0, unlimited
 	0x3C, 0x8F, // FifoTresh, not empty, level 15
-	0x3D, 0x12, // 0x10, // PacketConfig2, interpkt = 1, autorxrestart off
+	0x3D, 0x12, // PacketConfig2, interpkt = 1, autorxrestart on
 	0x6F, 0x20, // TestDagc ...
 	0x71, 0x02, // RegTestAfc
 }
