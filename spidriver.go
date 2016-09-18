@@ -16,6 +16,8 @@ type spiDriver struct {
 
 // NewSPIDriver returns a SPIDriver interface which allows control
 // over the SPI bus.
+// It is called by the host specific code (e.g. in host/rpi, host/bbb,
+// etc in order to register the host's driver. User code does not generally need to call this.
 func NewSPIDriver(spiDevMinor int, sbf spiBusFactory, i func() error) SPIDriver {
 	return &spiDriver{
 		spiDevMinor: spiDevMinor,

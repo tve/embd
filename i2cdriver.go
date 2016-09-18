@@ -15,6 +15,8 @@ type i2cDriver struct {
 
 // NewI2CDriver returns a I2CDriver interface which allows control
 // over the I²C subsystem.
+// It is called by the host specific code (e.g. in host/rpi, host/bbb,
+// etc in order to register the host's driver. User code does not generally need to call this.
 func NewI2CDriver(ibf i2cBusFactory) I2CDriver {
 	return &i2cDriver{
 		busMap: make(map[byte]I2CBus),

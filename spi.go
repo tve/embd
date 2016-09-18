@@ -24,6 +24,7 @@ const (
 )
 
 // SPIBus interface allows interaction with the SPI bus.
+// The SPIBus is typically opened using NewSPIBus.
 type SPIBus interface {
 	io.Writer
 
@@ -33,10 +34,10 @@ type SPIBus interface {
 	// ReceiveData receives data of length len into a slice.
 	ReceiveData(len int) ([]uint8, error)
 
-	// TransferAndReceiveByte transmits a byte data and receives a byte.
+	// TransferAndReceiveByte transmits a byte and receives a byte.
 	TransferAndReceiveByte(data byte) (byte, error)
 
-	// ReceiveByte receives a byte data.
+	// ReceiveByte receives a byte.
 	ReceiveByte() (byte, error)
 
 	// Close releases the resources associated with the bus.
@@ -56,7 +57,8 @@ type SPIDriver interface {
 var spiDriverInitialized bool
 var spiDriverInstance SPIDriver
 
-// InitSPI initializes the SPI driver.
+// InitSPI initializes the SPI driver after detecting the current host. It is not usually called,
+// rather NewSPIBus should be called, which calls InitSPI.
 func InitSPI() error {
 	if spiDriverInitialized {
 		return nil
@@ -82,7 +84,12 @@ func CloseSPI() error {
 	return spiDriverInstance.Close()
 }
 
-// NewSPIBus returns a SPIBus.
+// NewSPIBus returns an SPIBus driver appropriate for the currect host (calling InitSPI) and
+// returns an SPIBus. `Mode` should be one of the `SPIMode0`-`SPIMode3` constants, `channel`
+// is the SPI bus or channel number and is used by the generic driver to open `/dev/spiN.M` where
+// N is defined in the host detection code and M is the value of `channel`. Other drivers
+// may interpret channel differently. `Speed` is the desired bus clock rate in Hertz, and
+// `delay` appears unused at the moment (?).
 func NewSPIBus(mode, channel byte, speed, bpw, delay int) SPIBus {
 	if err := InitSPI(); err != nil {
 		panic(err)
