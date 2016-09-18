@@ -86,7 +86,8 @@ func registerInterrupt(pin *digitalPin, handler func(embd.DigitalPin)) error {
 	}
 
 	var event syscall.EpollEvent
-	event.Events = syscall.EPOLLIN | (syscall.EPOLLET & 0xffffffff) | syscall.EPOLLPRI
+	//event.Events = syscall.EPOLLIN | (syscall.EPOLLET & 0xffffffff) | syscall.EPOLLPRI
+	event.Events = syscall.EPOLLIN | 0x80000000 | syscall.EPOLLPRI | syscall.EPOLLERR
 
 	if err := syscall.SetNonblock(pinFd, true); err != nil {
 		return err
